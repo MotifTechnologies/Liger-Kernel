@@ -55,6 +55,9 @@ def fused_linear_cross_entropy_forward(
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
 
     if num_chunks_override is not None:
+        assert BT % num_chunks_override == 0, (
+            f"num_chunks_override={num_chunks_override} must evenly divide BT={BT}"
+        )
         chunk_size = triton.next_power_of_2(max(1, BT // num_chunks_override))
         num_chunks = triton.cdiv(BT, chunk_size)
     else:
