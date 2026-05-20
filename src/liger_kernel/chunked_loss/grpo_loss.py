@@ -96,9 +96,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or (chunk_size, 1) or None
         delta=None,  # Upper clamp for two-sided clipping (INTELLECT-2)
         use_bias_correction_kl=False,  # Importance-sampling-corrected KL (DeepSeek-V3.2)
-        log_ratio_clamp_value=None,  # Clamp policy/old log-ratio before exp for numerical stability
-        kl_input_clamp_value=None,  # Clamp (ref - policy) log-ratio before exp inside k3
-        kl_output_clamp_value=None,  # Clamp the resulting k3 KL output
+        log_ratio_clamp_value=20.0,  # Clamp policy/old log-ratio before exp for numerical stability
+        kl_input_clamp_value=20.0,  # Clamp (ref - policy) log-ratio before exp inside k3
+        kl_output_clamp_value=10.0,  # Clamp the resulting k3 KL output
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -286,9 +286,9 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vllm_is_ratio=None,
         delta=None,
         use_bias_correction_kl=False,
-        log_ratio_clamp_value=None,
-        kl_input_clamp_value=None,
-        kl_output_clamp_value=None,
+        log_ratio_clamp_value=20.0,
+        kl_input_clamp_value=20.0,
+        kl_output_clamp_value=10.0,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -427,9 +427,9 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         temperature: float = 1.0,
         delta: Optional[float] = None,
         use_bias_correction_kl: bool = False,
-        log_ratio_clamp_value: Optional[float] = None,
-        kl_input_clamp_value: Optional[float] = None,
-        kl_output_clamp_value: Optional[float] = None,
+        log_ratio_clamp_value: Optional[float] = 20.0,
+        kl_input_clamp_value: Optional[float] = 20.0,
+        kl_output_clamp_value: Optional[float] = 10.0,
     ):
         """
         Args:

@@ -44,9 +44,9 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         vllm_is_ratio=None,
         delta=None,
         use_bias_correction_kl=False,
-        log_ratio_clamp_value=None,
-        kl_input_clamp_value=None,
-        kl_output_clamp_value=None,
+        log_ratio_clamp_value=20.0,
+        kl_input_clamp_value=20.0,
+        kl_output_clamp_value=10.0,
     ):
         # TODO: check torch compile matmul
         """Chunked forward pass for PPO loss computation.
@@ -333,9 +333,9 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         sapo_temperature_neg=1.05,
         delta=None,
         use_bias_correction_kl=False,
-        log_ratio_clamp_value=None,
-        kl_input_clamp_value=None,
-        kl_output_clamp_value=None,
+        log_ratio_clamp_value=20.0,
+        kl_input_clamp_value=20.0,
+        kl_output_clamp_value=10.0,
     ):
         """Compute loss for a single chunk."""
         # Get policy log probabilities using chunk_forward
