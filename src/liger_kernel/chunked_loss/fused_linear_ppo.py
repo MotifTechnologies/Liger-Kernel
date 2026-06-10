@@ -47,6 +47,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         log_ratio_clamp_value=20.0,
         kl_input_clamp_value=20.0,
         kl_output_clamp_value=10.0,
+        entropy_coef=0.0,
     ):
         # TODO: check torch compile matmul
         """Chunked forward pass for PPO loss computation.
@@ -131,6 +132,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             log_ratio_clamp_value=log_ratio_clamp_value,
             kl_input_clamp_value=kl_input_clamp_value,
             kl_output_clamp_value=kl_output_clamp_value,
+            entropy_coef=entropy_coef,
         )
 
         def fused_fwd_bwd(
@@ -336,6 +338,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         log_ratio_clamp_value=20.0,
         kl_input_clamp_value=20.0,
         kl_output_clamp_value=10.0,
+        entropy_coef=0.0,
     ):
         """Compute loss for a single chunk."""
         # Get policy log probabilities using chunk_forward
@@ -373,6 +376,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             log_ratio_clamp_value=log_ratio_clamp_value,
             kl_input_clamp_value=kl_input_clamp_value,
             kl_output_clamp_value=kl_output_clamp_value,
+            entropy_coef=entropy_coef,
         )
 
         return chunk_loss, chunk_metrics
