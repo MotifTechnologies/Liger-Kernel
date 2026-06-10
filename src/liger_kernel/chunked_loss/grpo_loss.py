@@ -99,6 +99,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         log_ratio_clamp_value=20.0,  # Clamp policy/old log-ratio before exp for numerical stability
         kl_input_clamp_value=20.0,  # Clamp (ref - policy) log-ratio before exp inside k3
         kl_output_clamp_value=10.0,  # Clamp the resulting k3 KL output
+        entropy_coef=0.0,  # Entropy regularization coefficient: loss -= entropy_coef * H
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -200,6 +201,15 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
 
+        # Entropy regularization (a.k.a. PPO entropy bonus): higher per-token entropy H lowers the loss,
+        # counteracting entropy collapse. H = -sum_v p_v * log p_v, computed from the
+        # chunk's full log_probs (already materialized for the policy term -> no extra
+        # logit pass). per_token_loss is (B, T) at token level; padding is masked out in
+        # the reduction below. NOTE: assumes importance_sampling_level == "token".
+        if entropy_coef != 0.0:
+            per_token_entropy = -(log_probs.exp() * log_probs).sum(dim=-1)  # (B, T)
+            per_token_loss = per_token_loss - entropy_coef * per_token_entropy
+
         # Note: We normalize by the number of tokens in the batch (using full_attention_mask),
         # which is consistent with the DAPO loss implementation (https://arxiv.org/html/2503.14476v1)
         # and TRL GRPO implementation
@@ -289,6 +299,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         log_ratio_clamp_value=20.0,
         kl_input_clamp_value=20.0,
         kl_output_clamp_value=10.0,
+        entropy_coef=0.0,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -367,6 +378,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             log_ratio_clamp_value=log_ratio_clamp_value,
             kl_input_clamp_value=kl_input_clamp_value,
             kl_output_clamp_value=kl_output_clamp_value,
+            entropy_coef=entropy_coef,
         )
 
     @staticmethod
@@ -405,6 +417,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_log_ratio_clamp_value
             None,  # grad_kl_input_clamp_value
             None,  # grad_kl_output_clamp_value
+            None,  # grad_entropy_coef
         )
 
 
@@ -430,6 +443,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         log_ratio_clamp_value: Optional[float] = 20.0,
         kl_input_clamp_value: Optional[float] = 20.0,
         kl_output_clamp_value: Optional[float] = 10.0,
+        entropy_coef: float = 0.0,
     ):
         """
         Args:
@@ -483,6 +497,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         self.log_ratio_clamp_value = log_ratio_clamp_value
         self.kl_input_clamp_value = kl_input_clamp_value
         self.kl_output_clamp_value = kl_output_clamp_value
+        self.entropy_coef = entropy_coef
 
     def forward(
         self,
@@ -529,4 +544,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.log_ratio_clamp_value,
             self.kl_input_clamp_value,
             self.kl_output_clamp_value,
+            self.entropy_coef,
         )
