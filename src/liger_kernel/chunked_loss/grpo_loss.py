@@ -78,6 +78,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or (chunk_size, 1) or None
         delta=None,  # Upper clamp for two-sided clipping (INTELLECT-2)
         use_bias_correction_kl=False,  # Importance-sampling-corrected KL (DeepSeek-V3.2)
+        entropy_coef=0.0,  # Entropy regularization coefficient: loss -= entropy_coef * H
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -165,6 +166,15 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # Combine losses
             per_token_loss = per_token_loss + beta * kl_div
 
+        # Entropy regularization (a.k.a. PPO entropy bonus): higher per-token entropy H lowers the loss,
+        # counteracting entropy collapse. H = -sum_v p_v * log p_v, computed from the
+        # chunk's full log_probs (already materialized for the policy term -> no extra
+        # logit pass). per_token_loss is (B, T) at token level; padding is masked out in
+        # the reduction below. NOTE: assumes importance_sampling_level == "token".
+        if entropy_coef != 0.0:
+            per_token_entropy = -(log_probs.exp() * log_probs).sum(dim=-1)  # (B, T)
+            per_token_loss = per_token_loss - entropy_coef * per_token_entropy
+
         # Note: We normalize by the number of tokens in the batch (using full_attention_mask),
         # which is consistent with the DAPO loss implementation (https://arxiv.org/html/2503.14476v1)
         # and TRL GRPO implementation
@@ -251,6 +261,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vllm_is_ratio=None,
         delta=None,
         use_bias_correction_kl=False,
+        entropy_coef=0.0,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -317,6 +328,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             vllm_is_ratio=vllm_is_ratio,
             delta=delta,
             use_bias_correction_kl=use_bias_correction_kl,
+            entropy_coef=entropy_coef,
         )
 
     @staticmethod
@@ -352,6 +364,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_vllm_is_ratio
             None,  # grad_delta
             None,  # grad_use_bias_correction_kl
+            None,  # grad_entropy_coef
         )
 
 
@@ -374,6 +387,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         temperature: float = 1.0,
         delta: Optional[float] = None,
         use_bias_correction_kl: bool = False,
+        entropy_coef: float = 0.0,
     ):
         """
         Args:
@@ -416,6 +430,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         self.temperature = temperature
         self.delta = delta
         self.use_bias_correction_kl = use_bias_correction_kl
+        self.entropy_coef = entropy_coef
 
     def forward(
         self,
@@ -459,4 +474,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             vllm_is_ratio,
             self.delta,
             self.use_bias_correction_kl,
+            self.entropy_coef,
         )
