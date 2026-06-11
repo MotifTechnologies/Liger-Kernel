@@ -121,10 +121,15 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         # importance_sampling_level: "token" level: (B, T); "sequence" level: (B, 1)
         coef_1 = torch.exp(log_importance_weights)
         coef_2, is_lower_clipped, is_upper_clipped = clip_coef_fn(coef_1, epsilon_low, epsilon_high, loss_type)
+        # Advantages may be per-sample (B,) -> broadcast (B,1) (unchanged), or
+        # per-token (B, T) for SEQUENCE PACKING (a row holds several documents,
+        # each with its own advantage). fused_linear_ppo chunks advantages on
+        # dim 0, so (B, T) chunks correctly alongside the per-token logps/mask.
+        adv = advantages if advantages.dim() >= 2 else advantages.unsqueeze(1)
         if loss_type == "cispo":
             # CISPO: clip and detach the importance weights, multiply by log probs
             # Reference: https://github.com/huggingface/trl/blob/035c3ff151b953ca72cdfe0ee966bc1469a26fde/trl/trainer/grpo_trainer.py#L2030
-            per_token_loss = -coef_2 * advantages.unsqueeze(1) * per_token_logps
+            per_token_loss = -coef_2 * adv * per_token_logps
         elif loss_type == "sapo":
             # SAPO: Soft Adaptive Policy Optimization
             # Uses sigmoid-based soft gating instead of hard clipping
@@ -132,7 +137,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # TRL implementation: https://github.com/huggingface/trl/blob/1bd2a52ec2d8344050af736d60cdc735181ae4b8/trl/trainer/grpo_trainer.py#L2037-L2046
             per_token_loss = torch.empty_like(coef_1)
             # Expand advantages to match coef_1 shape for masking
-            advantages_expanded = advantages.unsqueeze(1).expand_as(coef_1)
+            advantages_expanded = adv.expand_as(coef_1)
             positive_advantages_mask = advantages_expanded > 0
 
             # Apply different temperatures based on advantage sign
@@ -147,8 +152,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             # Apply delta (two-sided clipping from INTELLECT-2) to coef_1
             if delta is not None:
                 coef_1 = torch.clamp(coef_1, max=delta)
-            per_token_loss1 = coef_1 * advantages.unsqueeze(1)
-            per_token_loss2 = coef_2 * advantages.unsqueeze(1)
+            per_token_loss1 = coef_1 * adv
+            per_token_loss2 = coef_2 * adv
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
 
         # Apply vLLM importance sampling correction BEFORE adding KL penalty
@@ -208,13 +213,13 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
 
         # Adjust clipping metric calculation based on importance sampling level
         if importance_sampling_level == "token":
-            is_clipped = (is_lower_clipped & (advantages.unsqueeze(1) < 0)) | (
-                is_upper_clipped & (advantages.unsqueeze(1) > 0)
+            is_clipped = (is_lower_clipped & (adv < 0)) | (
+                is_upper_clipped & (adv > 0)
             )
         else:  # sequence level
             # For sequence level, coef_1 is shape (B, 1), advantages is shape (B,)
-            is_clipped = (is_lower_clipped & (advantages.unsqueeze(1) < 0)) | (
-                is_upper_clipped & (advantages.unsqueeze(1) > 0)
+            is_clipped = (is_lower_clipped & (adv < 0)) | (
+                is_upper_clipped & (adv > 0)
             )
             is_clipped = is_clipped.expand_as(attention_mask)
 
