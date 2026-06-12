@@ -76,6 +76,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         sapo_temperature_pos=1.0,  # Temperature for positive advantages in SAPO
         sapo_temperature_neg=1.05,  # Temperature for negative advantages in SAPO
         vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or (chunk_size, 1) or None
+        force_on_policy_tis=False,  # when True, vllm_is_ratio CARRIES generation logprobs; the TIS weight exp(old - gen) is computed here (old == curr.detach() in the force-on-policy case → exp(curr - gen))
+        truncated_importance_sampling_ratio=None,  # upper clamp for the in-kernel TIS (force_on_policy_tis path only)
         delta=None,  # Upper clamp for two-sided clipping (INTELLECT-2)
         use_bias_correction_kl=False,  # Importance-sampling-corrected KL (DeepSeek-V3.2)
         **kwargs,
@@ -150,6 +152,19 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             per_token_loss1 = coef_1 * advantages.unsqueeze(1)
             per_token_loss2 = coef_2 * advantages.unsqueeze(1)
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
+
+        # force_on_policy_ratio path: the plugin cannot precompute exp(old - gen) because `curr`
+        # only exists inside this fused kernel. So it passes the GENERATION logprobs through the
+        # `vllm_is_ratio` slot and flips `force_on_policy_tis`. old_per_token_logps was set to
+        # per_token_logps.detach() above (since old was None), so this is exp(curr - gen) = the
+        # truncated-importance-sampling weight — identical to what ClippedPGLossFn would compute.
+        if force_on_policy_tis and vllm_is_ratio is not None:
+            _tis = torch.nan_to_num(
+                torch.exp(old_per_token_logps - vllm_is_ratio), nan=0.0, posinf=0.0, neginf=0.0
+            )
+            if truncated_importance_sampling_ratio is not None:
+                _tis = _tis.clamp(max=truncated_importance_sampling_ratio)
+            vllm_is_ratio = _tis
 
         # Apply vLLM importance sampling correction BEFORE adding KL penalty
         if vllm_is_ratio is not None:
@@ -251,6 +266,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vllm_is_ratio=None,
         delta=None,
         use_bias_correction_kl=False,
+        force_on_policy_tis=False,
+        truncated_importance_sampling_ratio=None,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -317,6 +334,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             vllm_is_ratio=vllm_is_ratio,
             delta=delta,
             use_bias_correction_kl=use_bias_correction_kl,
+            force_on_policy_tis=force_on_policy_tis,
+            truncated_importance_sampling_ratio=truncated_importance_sampling_ratio,
         )
 
     @staticmethod
@@ -352,6 +371,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_vllm_is_ratio
             None,  # grad_delta
             None,  # grad_use_bias_correction_kl
+            None,  # grad_force_on_policy_tis
+            None,  # grad_truncated_importance_sampling_ratio
         )
 
 
@@ -431,6 +452,8 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         ref_weight=None,
         ref_bias=None,
         vllm_is_ratio=None,
+        force_on_policy_tis=False,
+        truncated_importance_sampling_ratio=None,
     ):
         return LigerFusedLinearGRPOFunction.apply(
             _input,
@@ -459,4 +482,6 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             vllm_is_ratio,
             self.delta,
             self.use_bias_correction_kl,
+            force_on_policy_tis,
+            truncated_importance_sampling_ratio,
         )
