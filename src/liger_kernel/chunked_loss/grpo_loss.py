@@ -78,6 +78,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or (chunk_size, 1) or None
         force_on_policy_tis=False,  # when True, vllm_is_ratio CARRIES generation logprobs; the TIS weight exp(old - gen) is computed here (old == curr.detach() in the force-on-policy case → exp(curr - gen))
         truncated_importance_sampling_ratio=None,  # upper clamp for the in-kernel TIS (force_on_policy_tis path only)
+        truncated_importance_sampling_ratio_min=None,  # lower clamp (floor) for the in-kernel TIS (force_on_policy_tis path only)
         delta=None,  # Upper clamp for two-sided clipping (INTELLECT-2)
         use_bias_correction_kl=False,  # Importance-sampling-corrected KL (DeepSeek-V3.2)
         **kwargs,
@@ -164,6 +165,8 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             )
             if truncated_importance_sampling_ratio is not None:
                 _tis = _tis.clamp(max=truncated_importance_sampling_ratio)
+            if truncated_importance_sampling_ratio_min is not None:
+                _tis = _tis.clamp(min=truncated_importance_sampling_ratio_min)
             vllm_is_ratio = _tis
 
         # Apply vLLM importance sampling correction BEFORE adding KL penalty
@@ -268,6 +271,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         use_bias_correction_kl=False,
         force_on_policy_tis=False,
         truncated_importance_sampling_ratio=None,
+        truncated_importance_sampling_ratio_min=None,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -336,6 +340,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             use_bias_correction_kl=use_bias_correction_kl,
             force_on_policy_tis=force_on_policy_tis,
             truncated_importance_sampling_ratio=truncated_importance_sampling_ratio,
+            truncated_importance_sampling_ratio_min=truncated_importance_sampling_ratio_min,
         )
 
     @staticmethod
@@ -373,6 +378,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_use_bias_correction_kl
             None,  # grad_force_on_policy_tis
             None,  # grad_truncated_importance_sampling_ratio
+            None,  # grad_truncated_importance_sampling_ratio_min
         )
 
 
@@ -454,6 +460,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         vllm_is_ratio=None,
         force_on_policy_tis=False,
         truncated_importance_sampling_ratio=None,
+        truncated_importance_sampling_ratio_min=None,
     ):
         return LigerFusedLinearGRPOFunction.apply(
             _input,
@@ -484,4 +491,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             self.use_bias_correction_kl,
             force_on_policy_tis,
             truncated_importance_sampling_ratio,
+            truncated_importance_sampling_ratio_min,
         )
