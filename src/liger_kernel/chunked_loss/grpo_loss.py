@@ -195,10 +195,25 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         # `vllm_is_ratio` slot and flips `force_on_policy_tis`. old_per_token_logps was set to
         # per_token_logps.detach() above (since old was None), so this is exp(curr - gen) = the
         # truncated-importance-sampling weight — identical to what ClippedPGLossFn would compute.
+        # Rollout<->training mismatch diagnostics (monitor-only; never enter the loss).
+        # Computed from the SAME pre-clamp ratio rho = pi_theta/pi_vllm = exp(curr - gen) that the
+        # force_on_policy TIS weight uses. None unless that path runs. Each is a masked per-token
+        # mean normalized exactly like the KL/clip metrics so a consumer aggregates them identically.
+        _mm_vllm_kl = _mm_chi2_m2 = _mm_trunc_frac = None
         if force_on_policy_tis and vllm_is_ratio is not None:
-            _tis = torch.nan_to_num(
-                torch.exp(old_per_token_logps - vllm_is_ratio), nan=0.0, posinf=0.0, neginf=0.0
-            )
+            _logr = old_per_token_logps - vllm_is_ratio  # log(pi_theta / pi_vllm), per token, pre-clamp
+            _r = torch.nan_to_num(torch.exp(_logr), nan=0.0, posinf=0.0, neginf=0.0)
+            _mm_denom = torch.clamp(full_attention_mask.sum(), min=1.0)
+            _mm_vllm_kl = (((_r - _logr - 1.0) * attention_mask).sum() / _mm_denom).detach()  # K3 KL(pi_vllm||pi_theta)
+            _mm_chi2_m2 = ((_r * _r * attention_mask).sum() / _mm_denom).detach()             # E[rho^2]; chi^2 = this - 1
+            _outside = torch.zeros_like(_r)
+            if truncated_importance_sampling_ratio is not None:
+                _outside = _outside + (_r > truncated_importance_sampling_ratio).to(_r.dtype)
+            if truncated_importance_sampling_ratio_min is not None:
+                _outside = _outside + (_r < truncated_importance_sampling_ratio_min).to(_r.dtype)
+            _mm_trunc_frac = (((_outside > 0).to(_r.dtype) * attention_mask).sum() / _mm_denom).detach()  # TIS-truncated frac
+            # Actual (clamped) TIS weight applied to the loss.
+            _tis = _r
             if truncated_importance_sampling_ratio is not None:
                 _tis = _tis.clamp(max=truncated_importance_sampling_ratio)
             if truncated_importance_sampling_ratio_min is not None:
@@ -287,6 +302,24 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             is_clipped = is_clipped.expand_as(attention_mask)
 
         metrics.append((is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0))
+
+        # TIS weight metric: mean applied vllm_is_ratio over valid tokens. Appended LAST so the
+        # existing positional consumers (metrics[0]=KL when beta!=0, then clip_fraction) and the
+        # chunked-loss base-class per-chunk aggregation stay correct. Present iff TIS is active
+        # (vllm_is_ratio is not None) -> a consumer keys its presence off the same condition.
+        # vllm_is_ratio here is the post-clamp weight actually multiplied into per_token_loss
+        # (the force_on_policy_tis exp(curr-gen) path reassigned it above), so this surfaces the
+        # real correction strength instead of leaving it unobservable.
+        if vllm_is_ratio is not None:
+            metrics.append(
+                (vllm_is_ratio * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
+            )
+            # Rollout<->training mismatch diagnostics (force_on_policy_tis path only), appended in
+            # FIXED order right after the mean TIS weight. Monitor-only; never affect the loss.
+            if _mm_vllm_kl is not None:
+                metrics.append(_mm_vllm_kl)     # gen_kl_error / vllm-kl: K3 KL(pi_vllm || pi_theta)
+                metrics.append(_mm_chi2_m2)     # E[rho^2] (consumer subtracts 1 -> chi^2 divergence)
+                metrics.append(_mm_trunc_frac)  # fraction of tokens TIS-truncated
         return loss, metrics
 
     @classmethod
