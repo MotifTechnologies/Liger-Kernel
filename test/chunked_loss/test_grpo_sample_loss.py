@@ -55,10 +55,10 @@ def _ref_sum(per_token_loss, mask, ids, min_tokens):
     return (s / c.clamp(min=min_tokens).to(vl.dtype)).sum()
 
 
-def _fused(loss_type, h, W, sel, mask, adv, sample_weight=None):
+def _fused(loss_type, h, W, sel, mask, adv, sample_weight=None, chunk_size=1):
     fn = LigerFusedLinearGRPOLoss(
         beta=0.0, compiled=False, use_ref_model=False,
-        epsilon_low=0.2, epsilon_high=0.2, loss_type=loss_type, chunk_size=1,
+        epsilon_low=0.2, epsilon_high=0.2, loss_type=loss_type, chunk_size=chunk_size,
     )
     out = fn(h, W, sel, mask, adv, sample_weight=sample_weight)
     return out[0] if isinstance(out, (tuple, list)) else out
@@ -111,6 +111,29 @@ def test_grpo_sample_requires_sample_weight():
     adv = torch.randn(B, T, dtype=DT)
     with pytest.raises(AssertionError):
         _fused("grpo_sample", h, W, sel, mask, adv, sample_weight=None)
+
+
+def test_grpo_sample_multiple_chunks_match_single():
+    # B > chunk_size -> chunks > 1: sample_weight is sliced per chunk, so the
+    # chunked result must equal the single-chunk result (loss accumulates across
+    # chunks) and the scatter reference. Each row is its own trajectory.
+    torch.manual_seed(8)
+    B, T, D, V = 4, 6, 8, 16
+    h = torch.randn(B, T, D, dtype=DT, requires_grad=True)
+    W = torch.randn(V, D, dtype=DT)
+    sel = torch.randint(0, V, (B, T))
+    mask = torch.zeros(B, T, dtype=DT)
+    for i, n in enumerate([6, 4, 2, 5]):       # varied valid lengths per row
+        mask[i, :n] = 1.0
+    adv = torch.randn(B, T, dtype=DT)
+    ids = torch.arange(B).view(B, 1).expand(B, T)   # row b -> sample b
+    w = _weights(ids, mask, min_tokens=2)
+    one = _fused("grpo_sample", h, W, sel, mask, adv, sample_weight=w, chunk_size=B)   # chunks=1
+    many = _fused("grpo_sample", h, W, sel, mask, adv, sample_weight=w, chunk_size=1)  # chunks=4
+    ref = _ref_sum(-adv, mask, ids, 2)         # ratio=1 -> per_token_loss = -adv
+    # kernel accumulates loss_acc in fp32 across chunks -> fp32-epsilon tolerance.
+    assert torch.allclose(one.double(), many.double(), rtol=1e-5, atol=1e-6)
+    assert torch.allclose(many.double(), ref.double(), rtol=1e-5, atol=1e-6)
 
 
 def test_grpo_sample_gradient_flows():
