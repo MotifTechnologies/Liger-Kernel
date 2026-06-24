@@ -78,6 +78,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vllm_is_ratio=None,  # vLLM importance sampling ratio (chunk_size, seq_len) or (chunk_size, 1) or None
         delta=None,  # Upper clamp for two-sided clipping (INTELLECT-2)
         use_bias_correction_kl=False,  # Importance-sampling-corrected KL (DeepSeek-V3.2)
+        sample_weight=None,  # [B,T] per-token weights for loss_type="grpo_sample"
         **kwargs,
     ):
         """GRPO Loss Function matching GRPOTrainer implementation."""
@@ -174,7 +175,22 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         # which is consistent with the DAPO loss implementation (https://arxiv.org/html/2503.14476v1)
         # and TRL GRPO implementation
         # (https://github.com/huggingface/trl/blob/e751a16df56e70190fb94bed4a2035eec3303777/trl/trainer/grpo_trainer.py#L966)
-        if loss_type == "grpo" or loss_type == "sapo":
+        if loss_type == "grpo_sample":
+            # Per-sample (per-trajectory) GRPO. The caller bakes the per-token
+            # weight sample_weight[t] = mask[t] / max(N_{s(t)}, min_tokens), so
+            #   (per_token_loss * sample_weight).sum()
+            #     == sum_s( sum_{t in s} pg_t / max(N_s, min_tokens) )   (== sum_s loss_s).
+            # The accumulated sum across chunks is normalized by global_valid_samples
+            # by the caller. Phase 1: the chunk must cover the batch (B==1 packed row)
+            # so sample_weight aligns with per_token_loss exactly.
+            assert sample_weight is not None and sample_weight.shape == per_token_loss.shape, (
+                "loss_type='grpo_sample' needs per-token sample_weight matching the chunk "
+                f"shape {tuple(per_token_loss.shape)} (got "
+                f"{None if sample_weight is None else tuple(sample_weight.shape)}); Phase 1 "
+                "requires chunk_size to cover the batch (B==1 packed row)."
+            )
+            loss = (per_token_loss * sample_weight).sum()
+        elif loss_type == "grpo" or loss_type == "sapo":
             # Average per-sequence loss (SAPO uses same normalization as GRPO)
             loss = (
                 (per_token_loss * attention_mask).sum(-1) / torch.clamp(attention_mask.sum(-1), min=1.0)
@@ -256,6 +272,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
         vllm_is_ratio=None,
         delta=None,
         use_bias_correction_kl=False,
+        sample_weight=None,
     ):
         """
         Fused linear layer with GRPO loss.
@@ -322,6 +339,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             vllm_is_ratio=vllm_is_ratio,
             delta=delta,
             use_bias_correction_kl=use_bias_correction_kl,
+            sample_weight=sample_weight,
         )
 
     @staticmethod
@@ -357,6 +375,7 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             None,  # grad_vllm_is_ratio
             None,  # grad_delta
             None,  # grad_use_bias_correction_kl
+            None,  # grad_sample_weight
         )
 
 
@@ -436,6 +455,7 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
         ref_weight=None,
         ref_bias=None,
         vllm_is_ratio=None,
+        sample_weight=None,
     ):
         return LigerFusedLinearGRPOFunction.apply(
             _input,
@@ -464,4 +484,5 @@ class LigerFusedLinearGRPOLoss(torch.nn.Module):
             vllm_is_ratio,
             self.delta,
             self.use_bias_correction_kl,
+            sample_weight,
         )

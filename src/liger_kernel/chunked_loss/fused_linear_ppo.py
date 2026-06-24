@@ -44,6 +44,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         vllm_is_ratio=None,
         delta=None,
         use_bias_correction_kl=False,
+        sample_weight=None,
     ):
         # TODO: check torch compile matmul
         """Chunked forward pass for PPO loss computation.
@@ -112,6 +113,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             ref_weight=ref_weight,
             ref_bias=ref_bias,
             full_attention_mask=attention_mask,
+            sample_weight=sample_weight,
             epsilon_low=epsilon_low,
             epsilon_high=epsilon_high,
             beta=beta,
@@ -327,6 +329,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
         sapo_temperature_neg=1.05,
         delta=None,
         use_bias_correction_kl=False,
+        sample_weight=None,
     ):
         """Compute loss for a single chunk."""
         # Get policy log probabilities using chunk_forward
@@ -347,6 +350,7 @@ class LigerFusedLinearPPOBase(torch.autograd.Function):
             attention_mask=attention_mask_chunk,
             advantages=advantages_chunk,
             full_attention_mask=full_attention_mask,
+            sample_weight=sample_weight,
             ref_per_token_logps=ref_per_token_logps_chunk.float() if ref_per_token_logps_chunk is not None else None,
             old_per_token_logps=old_per_token_logps_chunk.float() if old_per_token_logps_chunk is not None else None,
             ref_log_probs=ref_log_probs,  # used when ref_per_token_logps is None
