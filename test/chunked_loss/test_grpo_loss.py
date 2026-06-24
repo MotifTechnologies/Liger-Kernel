@@ -249,6 +249,9 @@ class TorchLMHeadGRPO(torch.nn.Module):
         if self.beta != 0.0:
             metrics.append(((kl_div * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0)))
         metrics.append((is_clipped.float() * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0))
+        # Mirror the kernel: surface the mean applied TIS weight (appended LAST, only when active).
+        if vllm_is_ratio is not None:
+            metrics.append((vllm_is_ratio * attention_mask).sum() / torch.clamp(attention_mask.sum(), min=1.0))
         return loss, metrics
 
 

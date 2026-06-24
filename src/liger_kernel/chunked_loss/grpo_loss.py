@@ -287,6 +287,18 @@ class LigerFusedLinearGRPOFunction(LigerFusedLinearPPOBase):
             is_clipped = is_clipped.expand_as(attention_mask)
 
         metrics.append((is_clipped * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0))
+
+        # TIS weight metric: mean applied vllm_is_ratio over valid tokens. Appended LAST so the
+        # existing positional consumers (metrics[0]=KL when beta!=0, then clip_fraction) and the
+        # chunked-loss base-class per-chunk aggregation stay correct. Present iff TIS is active
+        # (vllm_is_ratio is not None) -> a consumer keys its presence off the same condition.
+        # vllm_is_ratio here is the post-clamp weight actually multiplied into per_token_loss
+        # (the force_on_policy_tis exp(curr-gen) path reassigned it above), so this surfaces the
+        # real correction strength instead of leaving it unobservable.
+        if vllm_is_ratio is not None:
+            metrics.append(
+                (vllm_is_ratio * attention_mask).sum() / torch.clamp(full_attention_mask.sum(), min=1.0)
+            )
         return loss, metrics
 
     @classmethod
